@@ -22,7 +22,7 @@ PUBLIC_DIR=public
 PASSPHRASE=
 
 # auto delete older backups after certain number days - default 60. YMMV
-AUTODELETEAFTER=60
+AUTODELETEAFTER=30
 
 # You may hard-code the domain name
 DOMAIN=

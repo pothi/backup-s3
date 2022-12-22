@@ -16,7 +16,7 @@
 PASSPHRASE=
 
 # auto delete older backups after certain number days - default 30. YMMV
-AUTODELETEAFTER=90
+AUTODELETEAFTER=7
 
 # the script assumes your sites are stored like ~/sites/example.com, ~/sites/example.net, ~/sites/example.org and so on.
 # if you have a different pattern, such as ~/app/example.com, please change the following to fit the server environment!
