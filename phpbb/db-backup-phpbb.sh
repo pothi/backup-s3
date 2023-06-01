@@ -1,178 +1,261 @@
 #!/usr/bin/env bash
 
-# version - 1
+# requirements
+# ~/log, ~/backups, ~/path/to/example.com/public
+
+version=6.1.1
 
 ### Variables - Please do not add trailing slash in the PATHs
 
-# To enable offsite backups...
-# apt install awscli (or yum install awscli)
-# legacy method
-# run 'pip install awscli' (as root)
-# aws configure (as normal user)
+# auto delete older backups after certain number days
+# configurable using -k|--keepfor <days>
+AUTODELETEAFTER=7
 
 # where to store the database backups?
 BACKUP_PATH=${HOME}/backups/db-backups
-encrypted_backup_path=${HOME}/backups/encrypted-db-backups
 
-# the script assumes that the sites are stored like...
-# ~/sites/example.com/public
-# ~/sites/example.net/public
-# ~/sites/example.org/public and so on.
+# a passphrase for encryption, in order to being able to use almost any special characters use ""
+# it's best to configure it in ~/.envrc file
+PASSPHRASE=
+
+# the script assumes your sites are stored like ~/sites/example.com, ~/sites/example.net, ~/sites/example.org and so on.
 # if you have a different pattern, such as ~/app/example.com, please change the following to fit the server environment!
 SITES_PATH=${HOME}/sites
 
-PUBLIC_DIR=public
-
-# a passphrase for encryption, in order to being able to use almost any special characters use ""
-PASSPHRASE=
-
-# auto delete older backups after certain number days - default 60. YMMV
-AUTODELETEAFTER=30
-
-# You may hard-code the domain name
-DOMAIN=
-
-# AWS Variable can be hard-coded here
-AWS_S3_BUCKET_NAME=
-
-# ref: http://docs.aws.amazon.com/cli/latest/userguide/cli-environment.html
-AWS_ACCESS_KEY_ID=
-AWS_SECRET_ACCESS_KEY=
-AWS_DEFAULT_REGION=
-AWS_PROFILE=
+# To debug, use any value for "debug", otherwise please leave it empty
+debug=
 
 #-------- Do NOT Edit Below This Line --------#
 
+[ "$debug" ] && set -x
+
+log_file=${HOME}/log/backups.log
+exec > >(tee -a "${log_file}")
+exec 2> >(tee -a "${log_file}" >&2)
+
+# Variables defined later in the script
 script_name=$(basename "$0")
+timestamp=$(date +%F_%H-%M-%S)
+success_alert=
+custom_email=
+custom_wp_path=
+BUCKET_NAME=
+DOMAIN=
+PUBLIC_DIR=public
 
-# create log directory if it doesn't exist
-[ ! -d ${HOME}/log ] && mkdir ${HOME}/log
+# get environment variables, if exists
+# .envrc is in the following format
+# export VARIABLE=value
+[ -f "$HOME/.envrc" ] && source ~/.envrc
+# uncomment the following, if you use .env with the format "VARIABLE=value" (without export)
+# if [ -f "$HOME/.env" ]; then; set -a; source ~/.env; set +a; fi
 
-LOG_FILE=${HOME}/log/backups.log
-exec > >(tee -a ${LOG_FILE} )
-exec 2> >(tee -a ${LOG_FILE} >&2)
+print_help() {
+    printf '%s\n\n' "Take a database backup"
 
-echo "Script started on... $(date +%c)"
+    printf 'Usage: %s [-b <name>] [-k <days>] [-e <email-address>] [-s] [-p <WP path>] [-v] [-h] example.com\n\n' "$script_name"
 
-export PATH=/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/usr/local/sbin
+    printf '\t%s\t%s\n' "-b, --bucket" "Name of the bucket for offsite backup (default: none)"
+    printf '\t%s\t%s\n' "-k, --keepfor" "# of days to keep the local backups (default: 7)"
+    printf '\t%s\t%s\n' "-e, --email" "Email to send success/failures alerts (default: root@localhost)"
+    printf '\t%s\t%s\n' "-s, --success" "Alert on successful backup too (default: alert only on failures)"
+    printf '\t%s\t%s\n' "-p, --path" "Path to WP files (default: ~/sites/example.com/public or ~/public_html for cPanel)"
+    printf '\t%s\t%s\n' "-v, --version" "Prints the version info"
+    printf '\t%s\t%s\n' "-h, --help" "Prints help"
 
-which aws &> /dev/null && declare -r aws_cli=`which aws`
-declare -r timestamp=$(date +%F_%H-%M-%S)
+    printf "\nFor more info, changelog and documentation... https://github.com/pothi/backup-wordpress\n"
+}
 
-let AUTODELETEAFTER--
+# https://stackoverflow.com/a/62616466/1004587
+# Convenience functions.
+EOL=$(printf '\1\3\3\7')
+opt=
+usage_error () { echo >&2 "$(basename $0):  $1"; exit 2; }
+assert_argument () { test "$1" != "$EOL" || usage_error "$2 requires an argument"; }
 
-# check if log directory exists
-if [ ! -d "${HOME}/log" ] && [ "$(mkdir -p ${HOME}/log)" ]; then
-    echo 'Log directory not found'
-    echo "Please create it manually at $HOME/log and then re-run this script"
-    exit 1
-fi 
+# One loop, nothing more.
+if [ "$#" != 0 ]; then
+  set -- "$@" "$EOL"
+  while [ "$1" != "$EOL" ]; do
+    opt="$1"; shift
+    case "$opt" in
 
-# create the dir to keep backups, if not exists
-if [ ! -d "$BACKUP_PATH" ] && [ "$(mkdir -p $BACKUP_PATH)" ]; then
-    echo "BACKUP_PATH is not found at $BACKUP_PATH. The script can't create it, either!"
-    echo 'You may want to create it manually'
-    exit 1
+      # Your options go here.
+      -v|--version) echo $version; exit 0;;
+      -V) echo $version; exit 0;;
+      -h|--help) print_help; exit 0;;
+      -b|--bucket) assert_argument "$1" "$opt"; BUCKET_NAME="$1"; shift;;
+      -k|--keepfor) assert_argument "$1" "$opt"; AUTODELETEAFTER="$1"; shift;;
+      -p|--path) assert_argument "$1" "$opt"; custom_wp_path="$1"; shift;;
+      -e|--email) assert_argument "$1" "$opt"; custom_email="$1"; shift;;
+      -s|--success) success_alert=1;;
+
+      # Arguments processing. You may remove any unneeded line after the 1st.
+      -|''|[!-]*) set -- "$@" "$opt";;                                          # positional argument, rotate to the end
+      --*=*)      set -- "${opt%%=*}" "${opt#*=}" "$@";;                        # convert '--name=arg' to '--name' 'arg'
+      -[!-]?*)    set -- $(echo "${opt#-}" | sed 's/\(.\)/ -\1/g') "$@";;       # convert '-abc' to '-a' '-b' '-c'
+      --)         while [ "$1" != "$EOL" ]; do set -- "$@" "$1"; shift; done;;  # process remaining arguments as positional
+      -*)         usage_error "unknown option: '$opt'";;                        # catch misspelled options
+      *)          usage_error "this should NEVER happen ($opt)";;               # sanity test for previous patterns
+
+    esac
+  done
+  shift  # $EOL
 fi
-if [ -n "$PASSPHRASE" ] && [ ! -d "$encrypted_backup_path" ] && [ "$(mkdir -p $encrypted_backup_path)" ]; then
-    echo "encrypted_backup_path is not found at $encrypted_backup_path. the script can't create it, either!"
-    echo 'you may want to create it manually'
-    exit 1
+
+# Do something cool with "$@"... \o/
+
+# Get example.com
+if [ "$#" -gt 0 ]; then
+    DOMAIN=$1
+    shift
+else
+    print_help
+    exit 2
 fi
 
-# get environment variables
-if [ -f "$HOME/.envrc"  ]; then
-    source ~/.envrc
+# compatibility with old syntax to get bucket name
+# To be removed in the future
+if [ "$#" -gt 0 ]; then
+    BUCKET_NAME=$1
+    echo "You are using old syntax."
+    print_help
+    shift
 fi
-if [ -f "$HOME/.env"  ]; then
-    source ~/.env
+
+# unwanted argument/s
+if [ "$#" -gt 0 ]; then
+    print_help
+    exit 2
 fi
+
+# to capture non-zero exit code in the pipeline
+set -o pipefail
+
+# attempt to create log directory if it doesn't exist
+if [ ! -d "${HOME}/log" ]; then
+    if ! mkdir -p "${HOME}"/log; then
+        echo "Log directory not found at ~/log. This script can't create it, either!"
+        echo 'You may create it manually and re-run this script.'
+        exit 1
+    fi
+fi
+# attempt to create the backups directory, if it doesn't exist
+if [ ! -d "$BACKUP_PATH" ]; then
+    if ! mkdir -p "$BACKUP_PATH"; then
+        echo "BACKUP_PATH is not found at $BACKUP_PATH. This script can't create it, either!"
+        echo 'You may create it manually and re-run this script.'
+        exit 1
+    fi
+fi
+
+export PATH=~/bin:~/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
+
+# command -v wp >/dev/null || { echo >&2 "wp cli is not found in $PATH. Exiting."; exit 1; }
+command -v aws >/dev/null || { echo >&2 "[Warn]: aws cli is not found in \$PATH. Offsite backups will not be taken!"; }
+command -v mail >/dev/null || echo >&2 "[Warn]: 'mail' command is not found in \$PATH; Email alerts will not be sent!"
+
+((AUTODELETEAFTER--))
 
 # check for the variable/s in three places
 # 1 - hard-coded value
 # 2 - optional parameter while invoking the script
 # 3 - environment files
 
-if [ "$DOMAIN" == ""  ]; then
-    if [ "$1" == "" ]; then
-        echo 'Usage ${script_name} example.com (S3 bucket name)'; exit 1
-    else
-        DOMAIN=$1
-    fi
+alertEmail=${custom_email:-${BACKUP_ADMIN_EMAIL:-${ADMIN_EMAIL:-"root@localhost"}}}
+
+# Define paths
+# cPanel uses a different directory structure
+# dir_to_backup and db_dump are used only in full-backup.sh
+cPanel=$(/usr/local/cpanel/cpanel -V 2>/dev/null)
+if [ "$cPanel" ]; then
+    SITES_PATH=$HOME
+    PUBLIC_DIR=public_html
+    WP_PATH=${SITES_PATH}/${PUBLIC_DIR}
+    # dir_to_backup=public_html
+    # db_dump=${WP_PATH}/db.sql
+else
+    WP_PATH=${SITES_PATH}/${DOMAIN}/${PUBLIC_DIR}
+    # dir_to_backup=${DOMAIN}
+    # db_dump=${SITES_PATH}/${DOMAIN}/db.sql
 fi
 
-phpbb_path=${SITES_PATH}/$DOMAIN/${PUBLIC_DIR}
-if [ ! -d "$phpbb_path" ]; then
-    echo; echo 'WordPress is not found at '$phpbb_path; echo "Usage ${script_name} domainname.tld (S3 bucket name)"; echo;
-    exit 1
+if [ "$custom_wp_path" ]; then
+    WP_PATH="$custom_wp_path"
+    DB_OUTPUT_FILE_NAME=${custom_wp_path}/db.sql
 fi
 
-if [ "$AWS_BUCKET" == ""  ]; then
-    if [ "$2" != "" ]; then
-        AWS_BUCKET=$2
-    elif [ "$AWS_S3_BUCKET_NAME" != "" ]; then
-        AWS_BUCKET=$AWS_S3_BUCKET_NAME
-    fi
-fi
+[ -d "$WP_PATH" ] || { echo >&2 "WordPress is not found at ${WP_PATH}"; exit 1; }
+
+echo "'$script_name' started on... $(date +%c)"
 
 # convert forward slash found in sub-directories to hyphen
 # ex: example.com/test would become example.com-test
-DOMAIN_FULL_PATH=$(echo $DOMAIN | awk '{gsub(/\//,"_")}; 1')
+DOMAIN_FULL_PATH=$(echo "$DOMAIN" | awk '{gsub(/\//,"-")}; 1')
 
-DB_OUTPUT_FILE_NAME=${BACKUP_PATH}/db-${DOMAIN_FULL_PATH}-${timestamp}.sql.gz
-ENCRYPTED_DB_OUTPUT_FILE_NAME=${encrypted_backup_path}/db-${DOMAIN_FULL_PATH}-${timestamp}.sql.gz
-DB_LATEST_FILE_NAME=${BACKUP_PATH}/db-${DOMAIN_FULL_PATH}-latest.sql.gz
+DB_OUTPUT_FILE_NAME=${BACKUP_PATH}/${DOMAIN_FULL_PATH}-${timestamp}.sql.gz
+DB_LATEST_FILE_NAME=${BACKUP_PATH}/${DOMAIN_FULL_PATH}-latest.sql.gz
 
 # when installed by the OS provided phpBB package.
-CONFIG_FILE_PATH=${phpbb_path}/database.inc.php
+# CONFIG_FILE_PATH=${phpbb_path}/database.inc.php
 # in some installations, it is with config.php file
-# CONFIG_FILE_PATH=${phpbb_path}/config.php
+CONFIG_FILE_PATH=${WP_PATH}/config.php
 
-DB_NAME=$(/bin/sed -n "/dbname/ s/[';\r]//gp" ${CONFIG_FILE_PATH} | /usr/bin/awk -F '=' '{print $2}')
-DB_USER=$(/bin/sed -n "/dbuser/ s/[';\r]//gp" ${CONFIG_FILE_PATH} | /usr/bin/awk -F '=' '{print $2}')
-DB_PASS=$(/bin/sed -n "/dbpass/ s/[';\r]//gp" ${CONFIG_FILE_PATH} | /usr/bin/awk -F '=' '{print $2}')
+DB_NAME=$(/bin/sed -n "/dbname/ s/[';\r]//gp" ${CONFIG_FILE_PATH} | /usr/bin/awk -F '=' '{print $2}' | head -1)
+DB_USER=$(/bin/sed -n "/dbuser/ s/[';\r]//gp" ${CONFIG_FILE_PATH} | /usr/bin/awk -F '=' '{print $2}' | head -1)
+DB_PASS=$(/bin/sed -n "/dbpass/ s/[';\r]//gp" ${CONFIG_FILE_PATH} | /usr/bin/awk -F '=' '{print $2}' | head -1)
+
+if [ "$debug" ]; then
+    echo "DB Name: $DB_NAME"
+    echo "DB User: $DB_USER"
+    echo "DB Pass: $DB_PASS"
+    exit
+fi
 
 # take actual DB backup
-    /usr/bin/mysqldump --add-drop-table ${DB_NAME} -u${DB_USER} -p${DB_PASS} | /bin/gzip > $DB_OUTPUT_FILE_NAME
-    rm $DB_LATEST_FILE_NAME
-    ln -s $DB_OUTPUT_FILE_NAME $DB_LATEST_FILE_NAME
-    if [ ! -z "$PASSPHRASE" ] ; then
-        gpg --symmetric --passphrase $PASSPHRASE --batch -o ${ENCRYPTED_DB_OUTPUT_FILE_NAME} $DB_OUTPUT_FILE_NAME
-        rm $DB_OUTPUT_FILE_NAME
-    fi
-    if [ "$?" != "0" ]; then
-        echo; echo 'Something went wrong while taking local backup!'
-        echo "Check $LOG_FILE for any further log info. Exiting now!"; echo; exit 2
-    fi
-
-# external backup
-if [ "$AWS_BUCKET" != "" ]; then
-    if [ ! -e "$aws_cli" ] ; then
-        echo; echo 'Did you run "pip install aws && aws configure"'; echo;
-    fi
-
-    if [ -z "$PASSPHRASE" ] ; then
-        $aws_cli s3 cp $DB_OUTPUT_FILE_NAME s3://$AWS_BUCKET/${DOMAIN_FULL_PATH}/databases/
-    else
-        $aws_cli s3 cp $ENCRYPTED_DB_OUTPUT_FILE_NAME s3://$AWS_BUCKET/${DOMAIN_FULL_PATH}/databases/
-    fi
-    if [ "$?" != "0" ]; then
-        echo; echo 'Something went wrong while taking offsite backup';
-        echo "Check $LOG_FILE for any log info"; echo
-    else
-        echo; echo 'Offsite backup successful'; echo
-    fi
-fi
-
-# Auto delete backups 
-[ -d "$BACKUP_PATH" ] && find $BACKUP_PATH -type f -mtime +$AUTODELETEAFTER -exec rm {} \;
-[ -d $encrypted_backup_path ] && find $encrypted_backup_path -type f -mtime +$AUTODELETEAFTER -exec rm {} \;
-
-echo "Script ended on... $(date +%c)"
-
-if [ -z "$PASSPHRASE" ] ; then
-    echo; echo 'DB backup is done; please check the latest backup at '${BACKUP_PATH}'.'; echo
+# 2>/dev/null to suppress any warnings / errors
+# wp --path="${WP_PATH}" transient delete --all 2>/dev/null
+if [ -n "$PASSPHRASE" ] ; then
+    DB_OUTPUT_FILE_NAME="${DB_OUTPUT_FILE_NAME}".gpg
+    mysqldump --no-tablespaces=true --add-drop-table ${DB_NAME} -u${DB_USER} -p${DB_PASS} | gzip | gpg --symmetric --passphrase "$PASSPHRASE" --batch -o "$DB_OUTPUT_FILE_NAME"
+    # wp --path="${WP_PATH}" db export --no-tablespaces=true --add-drop-table - | gzip | gpg --symmetric --passphrase "$PASSPHRASE" --batch -o "$DB_OUTPUT_FILE_NAME"
 else
-    echo; echo 'DB backup is done; please check the latest backup at '${ENCRYPTED_BACKUP_PATH}'.'; echo
+    mysqldump --no-tablespaces=true --add-drop-table ${DB_NAME} -u${DB_USER} -p${DB_PASS} | gzip > $DB_OUTPUT_FILE_NAME
+    # wp --path="${WP_PATH}" db export --no-tablespaces=true --add-drop-table - | gzip > "$DB_OUTPUT_FILE_NAME"
 fi
+if [ "$?" = "0" ]; then
+    printf "\nBackup is successfully taken locally.\n\n"
+else
+    msg="$script_name - [Error] Something went wrong while taking local DB backup!"
+    printf "\n%s\n\n" "$msg"
+    echo "$msg" | mail -s 'DB Backup Failure' "$alertEmail"
+    [ -f "$DB_OUTPUT_FILE_NAME" ] && rm -f "$DB_OUTPUT_FILE_NAME"
+    exit 1
+fi
+
+[ -L "$DB_LATEST_FILE_NAME" ] && rm "$DB_LATEST_FILE_NAME"
+ln -s "$DB_OUTPUT_FILE_NAME" "$DB_LATEST_FILE_NAME"
+
+# send the backup offsite
+if [ "$BUCKET_NAME" ]; then
+    cmd="aws s3 cp $DB_OUTPUT_FILE_NAME s3://$BUCKET_NAME/${DOMAIN_FULL_PATH}/db-backups/ --only-show-errors"
+    if $cmd; then
+        msg="$script_name - Offsite backup successful."
+        printf "\n%s\n\n" "$msg"
+        [ "$success_alert" ] && echo "$msg" | mail -s 'Offsite Backup Info' "$alertEmail"
+    else
+        msg="$script_name - [Error] Something went wrong while taking offsite backup."
+        printf "\n%s\n\n" "$msg"
+        echo "$msg" | mail -s 'Offsite Backup Info' "$alertEmail"
+    fi
+fi
+
+# Auto delete backups
+find -L "$BACKUP_PATH" -type f -mtime +$AUTODELETEAFTER -exec rm {} \;
+
+echo "Database backup is done; please check the latest backup in '${BACKUP_PATH}'."
+echo "Latest backup is at ${DB_OUTPUT_FILE_NAME}"
+
+printf "Script ended on...%s\n\n" "$(date +%c)"
+
 
