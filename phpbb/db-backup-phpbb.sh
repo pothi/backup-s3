@@ -201,9 +201,9 @@ DB_LATEST_FILE_NAME=${BACKUP_PATH}/${DOMAIN_FULL_PATH}-latest.sql.gz
 # in some installations, it is with config.php file
 CONFIG_FILE_PATH=${WP_PATH}/config.php
 
-DB_NAME=$(/bin/sed -n "/dbname/ s/[';\r]//gp" ${CONFIG_FILE_PATH} | /usr/bin/awk -F '=' '{print $2}' | head -1)
-DB_USER=$(/bin/sed -n "/dbuser/ s/[';\r]//gp" ${CONFIG_FILE_PATH} | /usr/bin/awk -F '=' '{print $2}' | head -1)
-DB_PASS=$(/bin/sed -n "/dbpass/ s/[';\r]//gp" ${CONFIG_FILE_PATH} | /usr/bin/awk -F '=' '{print $2}' | head -1)
+DB_NAME=$(sed -n "/dbname/ s/[';\r]//gp" ${CONFIG_FILE_PATH} | awk -F '=' '{print $2}' | head -1)
+DB_USER=$(sed -n "/dbuser/ s/[';\r]//gp" ${CONFIG_FILE_PATH} | awk -F '=' '{print $2}' | head -1)
+DB_PASS=$(sed -n "/dbpass/ s/[';\r]//gp" ${CONFIG_FILE_PATH} | awk -F '=' '{print $2}' | head -1)
 
 if [ "$debug" ]; then
     echo "DB Name: $DB_NAME"

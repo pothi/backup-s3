@@ -59,7 +59,7 @@ exec 2> >(tee -a ${LOG_FILE} >&2)
 
 echo "Script started on... $(date +%c)"
 
-export PATH=/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/usr/local/sbin
+export PATH=~/bin:~/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
 
 which aws &> /dev/null && declare -r aws_cli=`which aws`
 declare -r timestamp=$(date +%F_%H-%M-%S)
