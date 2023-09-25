@@ -122,11 +122,11 @@ if [ "$BUCKET_NAME" == ""  ]; then
     fi
 fi
 
-# WordPress root
+# XenForo root
 XenForoPath=${SITES_PATH}/${DOMAIN}/${PUBLIC_DIR}
 # For cPanel - main site
 [ ! -d "$XenForoPath" ] && XenForoPath=${SITES_PATH}/${PUBLIC_DIR}
-[ ! -d "$XenForoPath" ] && echo "WordPress is not found at $XenForoPath" &&  exit 1
+[ ! -d "$XenForoPath" ] && echo "XenForo is not found at $XenForoPath" &&  exit 1
 
 ConfigFilePath="${XenForoPath}/src/config.php"
 
@@ -147,15 +147,15 @@ fi
 # ex: example.com/test would become example.com-test
 DOMAIN_FULL_PATH=$(echo $DOMAIN | awk '{gsub(/\//,"-")}; 1')
 
-DB_OUTPUT_FILE_NAME=${BACKUP_PATH}/${DOMAIN_FULL_PATH}-${timestamp}.sql.gz
-ENCRYPTED_DB_OUTPUT_FILE_NAME=${ENCRYPTED_BACKUP_PATH}/db-${DOMAIN_FULL_PATH}-${timestamp}.sql.gz
-DB_LATEST_FILE_NAME=${BACKUP_PATH}/${DOMAIN_FULL_PATH}-latest.sql.gz
+DB_OUTPUT_FILE_NAME=${BACKUP_PATH}/${DOMAIN_FULL_PATH}-xenforo-${timestamp}.sql.gz
+ENCRYPTED_DB_OUTPUT_FILE_NAME=${ENCRYPTED_BACKUP_PATH}/db-xenforo-${DOMAIN_FULL_PATH}-${timestamp}.sql.gz
+DB_LATEST_FILE_NAME=${BACKUP_PATH}/${DOMAIN_FULL_PATH}-xenforo-latest.sql.gz
 
 # take actual DB backup
 # if [ -f "$wp_cli" ]; then
     # $wp_cli --path=${XenForoPath} transient delete --all
     # $wp_cli --path=${XenForoPath} db export --no-tablespaces=true --add-drop-table - | gzip > $DB_OUTPUT_FILE_NAME
-    \mysqldump --add-drop-table -y ${DB_NAME} -u${DB_USER} -p${DB_PASS} | \gzip > $DB_OUTPUT_FILE_NAME
+    \mysqldump --add-drop-table -y ${DB_Name} -u${DB_User} -p${DB_Pass} | \gzip > $DB_OUTPUT_FILE_NAME
     if [ "$?" != "0" ]; then
         echo; echo 'Something went wrong while taking local backup!'
         [ -f $DB_OUTPUT_FILE_NAME ] && rm -f $DB_OUTPUT_FILE_NAME
@@ -176,9 +176,9 @@ DB_LATEST_FILE_NAME=${BACKUP_PATH}/${DOMAIN_FULL_PATH}-latest.sql.gz
 # external backup
 if [ "$BUCKET_NAME" != "" ]; then
     if [ -z "$PASSPHRASE" ] ; then
-        $aws_cli s3 cp $DB_OUTPUT_FILE_NAME s3://$BUCKET_NAME/${DOMAIN_FULL_PATH}/db-backups/ --only-show-errors
+        $aws_cli s3 cp $DB_OUTPUT_FILE_NAME s3://$BUCKET_NAME/${DOMAIN_FULL_PATH}/xenforo/db-backups/ --only-show-errors
     else
-        $aws_cli s3 cp $ENCRYPTED_DB_OUTPUT_FILE_NAME s3://$BUCKET_NAME/${DOMAIN_FULL_PATH}/encrypted-db-backups/ --only-show-errors
+        $aws_cli s3 cp $ENCRYPTED_DB_OUTPUT_FILE_NAME s3://$BUCKET_NAME/${DOMAIN_FULL_PATH}/xenforo/encrypted-db-backups/ --only-show-errors
     fi
     if [ "$?" != "0" ]; then
         echo; echo 'Something went wrong while taking offsite backup';
